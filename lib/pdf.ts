@@ -1,7 +1,7 @@
 // =============================================
 // jsPDF による見積書PDF生成
-// 日本語対応：ブラウザ実行時にCDNからNotoSansJPフォントをfetchして埋め込む
-// canvas方式は完全廃止
+// 日本語対応：TTFフォントをfetchしてjsPDFに埋め込む
+// woff/woff2はjsPDF非対応のため、TTFのみを使用
 // =============================================
 
 import { Estimate, CompanySettings } from "./types";
@@ -11,20 +11,69 @@ interface JsPDFWithAutoTable {
   lastAutoTable: { finalY: number };
 }
 
-// ── フォントキャッシュ（同一セッション内で再fetchしない） ──────
-let cachedFontBase64Regular: string | null = null;
-let cachedFontBase64Bold: string | null = null;
+let cachedFontRegular: string | null = null;
+let cachedFontBold: string | null = null;
 
-async function fetchFontAsBase64(url: string): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`フォント取得失敗: ${url} (${res.status})`);
-  const buffer = await res.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
+// TTFフォントのCDN候補（順番に試みる）
+// jsPDFはTTF形式のみ対応。woff/woff2は非対応。
+const FONT_SOURCES_REGULAR = [
+  "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP-Regular.ttf",
+  "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted-upm/NotoSansJP/NotoSansJP-Regular.ttf",
+  "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansjp/NotoSansJP-Regular.ttf",
+];
+
+const FONT_SOURCES_BOLD = [
+  "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP-Bold.ttf",
+  "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted-upm/NotoSansJP/NotoSansJP-Bold.ttf",
+  "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansjp/NotoSansJP-Bold.ttf",
+];
+
+async function fetchFontWithFallback(urls: string[]): Promise<string> {
+  const errors: string[] = [];
+
+  for (const url of urls) {
+    try {
+      console.log(`[PDF] フォント取得試行: ${url}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const msg = `HTTP ${res.status} ${res.statusText}`;
+        console.warn(`[PDF] フォント取得失敗 (${msg}): ${url}`);
+        errors.push(`${url}: ${msg}`);
+        continue;
+      }
+
+      const buffer = await res.arrayBuffer();
+      if (buffer.byteLength < 1000) {
+        const msg = `ファイルサイズが小さすぎます (${buffer.byteLength} bytes)`;
+        console.warn(`[PDF] フォント取得失敗 (${msg}): ${url}`);
+        errors.push(`${url}: ${msg}`);
+        continue;
+      }
+
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      const chunkSize = 8192;
+      for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode(...chunk);
+      }
+      const base64 = btoa(binary);
+      console.log(`[PDF] フォント取得成功: ${url} (${Math.round(buffer.byteLength / 1024)}KB)`);
+      return base64;
+
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[PDF] フォント取得エラー (${msg}): ${url}`);
+      errors.push(`${url}: ${msg}`);
+    }
   }
-  return btoa(binary);
+
+  throw new Error(`全フォントソースの取得に失敗しました:\n${errors.join("\n")}`);
 }
 
 async function registerJapaneseFont(doc: {
@@ -33,26 +82,30 @@ async function registerJapaneseFont(doc: {
   setFont: (fontName: string, style?: string) => void;
 }): Promise<{ fontName: string; available: boolean }> {
   const FONT_NAME = "NotoSansJP";
-  const BASE_URL = "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/fonts/";
 
   try {
-    if (!cachedFontBase64Regular) {
-      cachedFontBase64Regular = await fetchFontAsBase64(`${BASE_URL}NotoSansJP-Regular.ttf`);
+    if (!cachedFontRegular) {
+      console.log("[PDF] NotoSansJP-Regular を取得中...");
+      cachedFontRegular = await fetchFontWithFallback(FONT_SOURCES_REGULAR);
     }
-    doc.addFileToVFS("NotoSansJP-Regular.ttf", cachedFontBase64Regular);
+    doc.addFileToVFS("NotoSansJP-Regular.ttf", cachedFontRegular);
     doc.addFont("NotoSansJP-Regular.ttf", FONT_NAME, "normal");
 
-    if (!cachedFontBase64Bold) {
-      cachedFontBase64Bold = await fetchFontAsBase64(`${BASE_URL}NotoSansJP-Bold.ttf`);
+    if (!cachedFontBold) {
+      console.log("[PDF] NotoSansJP-Bold を取得中...");
+      cachedFontBold = await fetchFontWithFallback(FONT_SOURCES_BOLD);
     }
-    doc.addFileToVFS("NotoSansJP-Bold.ttf", cachedFontBase64Bold);
+    doc.addFileToVFS("NotoSansJP-Bold.ttf", cachedFontBold);
     doc.addFont("NotoSansJP-Bold.ttf", FONT_NAME, "bold");
 
     doc.setFont(FONT_NAME, "normal");
+    console.log("[PDF] 日本語フォント登録完了");
     return { fontName: FONT_NAME, available: true };
 
   } catch (e) {
-    console.warn("NotoSansJP フォント取得失敗。フォールバックを使用:", e);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[PDF] 日本語フォントの登録に失敗しました:", msg);
+    console.warn("[PDF] helveticaフォントで続行します（日本語は文字化けする可能性があります）");
     doc.setFont("helvetica", "normal");
     return { fontName: "helvetica", available: false };
   }
@@ -86,16 +139,8 @@ export async function downloadEstimatePDF(
   );
 
   function txt(
-    text: string,
-    x: number,
-    y: number,
-    opts: {
-      size?: number;
-      bold?: boolean;
-      color?: string;
-      align?: "left" | "right" | "center";
-      maxWidth?: number;
-    } = {}
+    text: string, x: number, y: number,
+    opts: { size?: number; bold?: boolean; color?: string; align?: "left" | "right" | "center"; maxWidth?: number } = {}
   ): void {
     if (!text) return;
     const { size = 10, bold = false, color = "#000000", align = "left", maxWidth } = opts;
@@ -105,26 +150,17 @@ export async function downloadEstimatePDF(
     const g = parseInt(color.slice(3, 5), 16);
     const b = parseInt(color.slice(5, 7), 16);
     doc.setTextColor(r, g, b);
-    if (maxWidth) {
-      doc.text(text, x, y, { align, maxWidth });
-    } else {
-      doc.text(text, x, y, { align });
-    }
+    if (maxWidth) { doc.text(text, x, y, { align, maxWidth }); }
+    else { doc.text(text, x, y, { align }); }
   }
 
   function fillRect(x: number, y: number, w: number, h: number, hex: string): void {
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    doc.setFillColor(r, g, b);
+    doc.setFillColor(parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16));
     doc.rect(x, y, w, h, "F");
   }
 
   function drawLine(x1: number, y1: number, x2: number, y2: number, hex = "#cccccc", lw = 0.3): void {
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    doc.setDrawColor(r, g, b);
+    doc.setDrawColor(parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16));
     doc.setLineWidth(lw);
     doc.line(x1, y1, x2, y2);
   }
@@ -143,7 +179,6 @@ export async function downloadEstimatePDF(
   ly += 1;
   drawLine(colLeft, ly, colLeft + 85, ly, "#1b3a6b", 0.5);
   ly += 6;
-
   txt(`件名：${estimate.title || "　"}`, colLeft, ly, { size: 9, color: "#444444" });
   ly += 7;
 
@@ -153,10 +188,8 @@ export async function downloadEstimatePDF(
   ly += 18;
 
   if (company.logoBase64) {
-    try {
-      doc.addImage(company.logoBase64, "PNG", colRightEnd - 35, ry - 2, 35, 12);
-      ry += 15;
-    } catch { /* ロゴ読み込み失敗は無視 */ }
+    try { doc.addImage(company.logoBase64, "PNG", colRightEnd - 35, ry - 2, 35, 12); ry += 15; }
+    catch { /* ignore */ }
   }
 
   const companyLines: [string, number, boolean][] = [
@@ -178,11 +211,8 @@ export async function downloadEstimatePDF(
 
   // 4. 明細テーブル
   const bodyRows = estimate.items.map((item) => [
-    item.name || "",
-    item.quantity.toLocaleString(),
-    item.unit || "",
-    `¥${fmt(item.unitPrice)}`,
-    `¥${fmt(item.quantity * item.unitPrice)}`,
+    item.name || "", item.quantity.toLocaleString(), item.unit || "",
+    `¥${fmt(item.unitPrice)}`, `¥${fmt(item.quantity * item.unitPrice)}`,
   ]);
   while (bodyRows.length < 5) bodyRows.push(["", "", "", "", ""]);
 
@@ -191,22 +221,8 @@ export async function downloadEstimatePDF(
     margin: { left: ml, right: mr },
     head: [["品目", "数量", "単位", "単価", "金額"]],
     body: bodyRows,
-    styles: {
-      font: fontName,
-      fontSize: 9,
-      cellPadding: { top: 3, bottom: 3, left: 3, right: 3 },
-      lineColor: [220, 220, 220],
-      lineWidth: 0.2,
-    },
-    headStyles: {
-      font: fontName,
-      fillColor: [27, 58, 107],
-      textColor: [255, 255, 255],
-      fontStyle: "bold",
-      fontSize: 9,
-      halign: "center",
-      minCellHeight: 9,
-    },
+    styles: { font: fontName, fontSize: 9, cellPadding: { top: 3, bottom: 3, left: 3, right: 3 }, lineColor: [220, 220, 220], lineWidth: 0.2 },
+    headStyles: { font: fontName, fillColor: [27, 58, 107], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 9, halign: "center", minCellHeight: 9 },
     bodyStyles: { font: fontName },
     columnStyles: {
       0: { cellWidth: "auto", halign: "left" },
@@ -250,7 +266,6 @@ export async function downloadEstimatePDF(
     sy += 3;
     drawLine(ml, sy, pageW - mr, sy, "#cccccc", 0.3);
     sy += 6;
-
     if (estimate.note) {
       txt("備考：", ml, sy, { size: 9, bold: true, color: "#333333" });
       sy += 6;
@@ -261,7 +276,6 @@ export async function downloadEstimatePDF(
       }
       sy += 3;
     }
-
     if (company.bankInfo) {
       txt("振込先：", ml, sy, { size: 9, bold: true, color: "#333333" });
       sy += 6;
@@ -278,7 +292,10 @@ export async function downloadEstimatePDF(
   txt("パッと見積 で作成", pageW / 2, pageH - 6, { size: 7, color: "#aaaaaa", align: "center" });
 
   if (!fontAvailable) {
-    console.warn("日本語フォントの取得に失敗しました。インターネット接続を確認してください。");
+    console.error(
+      "[PDF] 警告: 日本語フォントの取得に失敗しました。\n" +
+      "試みたURL:\n" + [...FONT_SOURCES_REGULAR, ...FONT_SOURCES_BOLD].join("\n")
+    );
   }
 
   // 8. 保存
