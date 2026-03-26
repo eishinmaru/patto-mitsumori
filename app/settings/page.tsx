@@ -13,6 +13,14 @@ const BLANK: CompanySettings = {
   email: "", logoBase64: "", bankInfo: "",
 };
 
+// ── 郵便番号ハイフン自動挿入 ──────────────────────────────────
+// 数字のみ抽出して 123-4567 形式に整形
+function formatPostalCode(value: string): string {
+  const digits = value.replace(/\D/g, "").slice(0, 7);
+  if (digits.length <= 3) return digits;
+  return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+}
+
 // =============================================
 // useSearchParams() を使う内部コンポーネント
 // =============================================
@@ -35,6 +43,11 @@ function SettingsPageInner() {
 
   const upd = (k: keyof CompanySettings, v: string) =>
     setS((p) => ({ ...p, [k]: v }));
+
+  // 郵便番号専用ハンドラ
+  const handlePostalCode = (v: string) => {
+    upd("postalCode", formatPostalCode(v));
+  };
 
   const handleLogo = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -105,28 +118,76 @@ function SettingsPageInner() {
       <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm space-y-3">
         <p className="text-sm font-bold text-gray-700">📝 基本情報</p>
 
-        {[
-          { key: "name" as const, label: "会社名・屋号", placeholder: "○○建設、田中塗装店 など", required: true },
-          { key: "postalCode" as const, label: "郵便番号", placeholder: "123-4567", inputMode: "numeric" as const },
-          { key: "address" as const, label: "住所", placeholder: "大阪府○○市..." },
-          { key: "phone" as const, label: "電話番号", placeholder: "090-XXXX-XXXX", inputMode: "tel" as const },
-          { key: "email" as const, label: "メール", placeholder: "info@example.com", inputMode: "email" as const },
-        ].map(({ key, label, placeholder, required, inputMode }) => (
-          <div key={key}>
-            <label className="text-xs text-gray-500 block mb-1">
-              {label}{required && <span className="text-red-500 ml-1">*</span>}
-            </label>
-            <input
-              type="text"
-              inputMode={inputMode}
-              placeholder={placeholder}
-              value={s[key]}
-              onChange={(e) => upd(key, e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
-                focus:outline-none focus:ring-2 focus:ring-orange-400"
-            />
-          </div>
-        ))}
+        {/* 会社名 */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">
+            会社名・屋号 <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="text"
+            placeholder="○○建設、田中塗装店 など"
+            value={s.name}
+            onChange={(e) => upd("name", e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
+
+        {/* 郵便番号（ハイフン自動挿入） */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">郵便番号</label>
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="123-4567"
+            value={s.postalCode}
+            onChange={(e) => handlePostalCode(e.target.value)}
+            maxLength={8}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
+
+        {/* 住所 */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">住所</label>
+          <input
+            type="text"
+            placeholder="大阪府○○市..."
+            value={s.address}
+            onChange={(e) => upd("address", e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
+
+        {/* 電話番号 */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">電話番号</label>
+          <input
+            type="text"
+            inputMode="tel"
+            placeholder="090-XXXX-XXXX"
+            value={s.phone}
+            onChange={(e) => upd("phone", e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
+
+        {/* メール */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">メール</label>
+          <input
+            type="text"
+            inputMode="email"
+            placeholder="info@example.com"
+            value={s.email}
+            onChange={(e) => upd("email", e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
       </div>
 
       {/* 振込先 */}
