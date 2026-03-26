@@ -1,229 +1,177 @@
-"use client";
 // =============================================
-// /settings ── 会社情報・ロゴ登録
+// jsPDF による見積書PDF生成
 // =============================================
 
-import { Suspense, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { getCompany, saveCompany } from "@/lib/storage";
-import { CompanySettings } from "@/lib/types";
+import { Estimate, CompanySettings } from "./types";
+import { calcEstimate, fmt } from "./calc";
 
-const BLANK: CompanySettings = {
-  name: "", postalCode: "", address: "", phone: "",
-  email: "", logoBase64: "", bankInfo: "",
-};
-
-// ── 郵便番号ハイフン自動挿入 ──────────────────────────────────
-function formatPostalCode(value: string): string {
-  const digits = value.replace(/\D/g, "").slice(0, 7);
-  if (digits.length <= 3) return digits;
-  return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+interface JsPDFWithAutoTable {
+  lastAutoTable: { finalY: number };
 }
 
-// =============================================
-// useSearchParams() を使う内部コンポーネント
-// =============================================
-function SettingsPageInner() {
-  const router = useRouter();
-  const params = useSearchParams();
-  const isFirst = params.get("first") === "true";
+export async function downloadEstimatePDF(
+  estimate: Estimate,
+  company: CompanySettings
+): Promise<void> {
+  const { default: jsPDF } = await import("jspdf");
+  const { default: autoTable } = await import("jspdf-autotable");
 
-  const [s, setS] = useState<CompanySettings>(BLANK);
-  const [saved, setSaved] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  const logoRef = useRef<HTMLInputElement>(null);
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const calc = calcEstimate(estimate.items, estimate.taxRate, estimate.discountAmount);
 
-  useEffect(() => {
-    setMounted(true);
-    setS(getCompany());
-  }, []);
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const ml = 15;
+  const mr = 15;
 
-  if (!mounted) return null;
+  function txt(text: string, x: number, y: number, opts: { size?: number; bold?: boolean; color?: string; align?: "left" | "right" | "center" } = {}) {
+    const { size = 10, bold = false, color = "#000000", align = "left" } = opts;
+    doc.setFont("helvetica", bold ? "bold" : "normal");
+    doc.setFontSize(size);
+    const r = parseInt(color.slice(1,3),16);
+    const g = parseInt(color.slice(3,5),16);
+    const b = parseInt(color.slice(5,7),16);
+    doc.setTextColor(r,g,b);
+    doc.text(text, x, y, { align });
+  }
 
-  const upd = (k: keyof CompanySettings, v: string) =>
-    setS((p) => ({ ...p, [k]: v }));
+  function fillRect(x: number, y: number, w: number, h: number, hex: string) {
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    doc.setFillColor(r,g,b);
+    doc.rect(x,y,w,h,"F");
+  }
 
-  const handlePostalCode = (v: string) => {
-    upd("postalCode", formatPostalCode(v));
-  };
+  function line(x1: number, y1: number, x2: number, y2: number, hex = "#cccccc", lw = 0.3) {
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    doc.setDrawColor(r,g,b);
+    doc.setLineWidth(lw);
+    doc.line(x1,y1,x2,y2);
+  }
 
-  const handleLogo = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => upd("logoBase64", ev.target?.result as string);
-    reader.readAsDataURL(file);
-  };
+  txt("MITSUMORI-SHO", pageW/2, 16, { size:18, bold:true, align:"center", color:"#1b3a6b" });
+  txt("( Estimate )", pageW/2, 21, { size:8, color:"#888888", align:"center" });
+  txt(`Date: ${estimate.issueDate}`, pageW-mr, 14, { size:8, color:"#666666", align:"right" });
 
-  const handleSave = () => {
-    saveCompany(s);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-    if (isFirst) router.push("/");
-  };
+  const colLeft = ml;
+  const colRightEnd = pageW - mr;
+  let ly = 28;
+  let ry = 28;
 
-  return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-2">
-        {isFirst && (
-          <span className="bg-orange-100 text-orange-700 text-xs font-bold px-2 py-1 rounded-full">
-            初回設定
-          </span>
-        )}
-        <h1 className="text-lg font-black text-gray-800">⚙️ 会社情報設定</h1>
-      </div>
+  txt(estimate.clientName || "---", colLeft, ly, { size:13, bold:true, color:"#1b3a6b" });
+  ly += 1;
+  line(colLeft, ly, colLeft+85, ly, "#1b3a6b", 0.5);
+  ly += 5;
+  txt(`Subject: ${estimate.title || "---"}`, colLeft, ly, { size:9, color:"#444444" });
+  ly += 6;
 
-      {isFirst && (
-        <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 text-sm text-orange-800">
-          <p className="font-bold mb-1">🎉 ようこそ！パッと見積へ</p>
-          会社名や連絡先を設定しておくと、見積書に自動で反映されます。
-          後でいつでも変更できます。
-        </div>
-      )}
+  fillRect(colLeft, ly, 85, 12, "#1b3a6b");
+  txt("TOTAL (tax incl.)", colLeft+2, ly+4, { size:7, color:"#aac4e8" });
+  txt(`\\${fmt(calc.total)}`, colLeft+83, ly+9, { size:13, bold:true, color:"#ffffff", align:"right" });
+  ly += 16;
 
-      {/* ロゴ */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-        <p className="text-sm font-bold text-gray-700 mb-3">🏷 会社ロゴ（任意）</p>
-        {s.logoBase64 ? (
-          <div className="flex items-center gap-3 mb-3">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={s.logoBase64} alt="ロゴ" className="h-14 object-contain border rounded-lg bg-gray-50 p-1" />
-            <button
-              type="button"
-              onClick={() => upd("logoBase64", "")}
-              className="text-xs text-red-500 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50"
-            >
-              削除
-            </button>
-          </div>
-        ) : (
-          <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl h-20 flex items-center justify-center mb-3 text-gray-400 text-sm">
-            ロゴ画像なし
-          </div>
-        )}
-        <button
-          type="button"
-          onClick={() => logoRef.current?.click()}
-          className="text-sm bg-gray-100 hover:bg-gray-200 px-4 py-2.5 rounded-lg font-bold transition-colors"
-        >
-          📁 画像を選択
-        </button>
-        <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={handleLogo} />
-        <p className="text-xs text-gray-400 mt-2">PNG・JPG対応。見積書の右上に表示されます。</p>
-      </div>
+  if (company.logoBase64) {
+    try { doc.addImage(company.logoBase64,"PNG",colRightEnd-35,ry-2,35,12); ry+=14; } catch { /* ignore */ }
+  }
 
-      {/* 基本情報 */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm space-y-3">
-        <p className="text-sm font-bold text-gray-700">📝 基本情報</p>
+  const companyLines: [string, number, boolean][] = [
+    [company.name||"---", 10, true],
+    [company.postalCode ? `〒 ${company.postalCode}` : "", 8, false],
+    [company.address||"", 8, false],
+    [company.phone ? `TEL: ${company.phone}` : "", 8, false],
+    [company.email||"", 8, false],
+  ];
+  for (const [t,sz,bold] of companyLines) {
+    if (!t) continue;
+    txt(t, colRightEnd, ry, { size:sz, bold, color:"#222222", align:"right" });
+    ry += sz*0.42+1.8;
+  }
 
-        {/* 会社名 */}
-        <div>
-          <label className="text-xs text-gray-500 block mb-1">
-            会社名・屋号 <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="text"
-            placeholder="○○建設、田中塗装店 など"
-            value={s.name}
-            onChange={(e) => upd("name", e.target.value)}
-            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
-              focus:outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </div>
+  const tableStartY = Math.max(ly,ry)+4;
+  line(ml, tableStartY-2, pageW-mr, tableStartY-2, "#1b3a6b", 0.5);
 
-        {/* 郵便番号（ハイフン自動挿入） */}
-        <div>
-          <label className="text-xs text-gray-500 block mb-1">郵便番号</label>
-          <input
-            type="text"
-            inputMode="numeric"
-            placeholder="123-4567"
-            value={s.postalCode}
-            onChange={(e) => handlePostalCode(e.target.value)}
-            maxLength={8}
-            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
-              focus:outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </div>
+  const bodyRows = estimate.items.map(item => [
+    item.name||"",
+    item.quantity.toLocaleString(),
+    item.unit||"",
+    `\\${fmt(item.unitPrice)}`,
+    `\\${fmt(item.quantity*item.unitPrice)}`,
+  ]);
+  while (bodyRows.length < 5) bodyRows.push(["","","","",""]);
 
-        {/* 住所 */}
-        <div>
-          <label className="text-xs text-gray-500 block mb-1">住所</label>
-          <input
-            type="text"
-            placeholder="大阪府○○市..."
-            value={s.address}
-            onChange={(e) => upd("address", e.target.value)}
-            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
-              focus:outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </div>
+  autoTable(doc, {
+    startY: tableStartY,
+    margin: { left:ml, right:mr },
+    head: [["Item / Description","Qty","Unit","Unit Price","Amount"]],
+    body: bodyRows,
+    styles: { font:"helvetica", fontSize:9, cellPadding:{top:3,bottom:3,left:3,right:3}, lineColor:[220,220,220], lineWidth:0.2 },
+    headStyles: { fillColor:[27,58,107], textColor:[255,255,255], fontStyle:"bold", fontSize:8.5, halign:"center" },
+    columnStyles: {
+      0:{cellWidth:"auto",halign:"left"},
+      1:{cellWidth:14,halign:"center"},
+      2:{cellWidth:14,halign:"center"},
+      3:{cellWidth:30,halign:"right"},
+      4:{cellWidth:30,halign:"right"},
+    },
+    alternateRowStyles: { fillColor:[245,244,240] },
+  });
 
-        {/* 電話番号 */}
-        <div>
-          <label className="text-xs text-gray-500 block mb-1">電話番号</label>
-          <input
-            type="text"
-            inputMode="tel"
-            placeholder="090-XXXX-XXXX"
-            value={s.phone}
-            onChange={(e) => upd("phone", e.target.value)}
-            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
-              focus:outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </div>
+  const docEx = doc as unknown as JsPDFWithAutoTable;
+  let sy = docEx.lastAutoTable.finalY + 6;
+  const labelX = pageW-mr-55;
+  const valueX = pageW-mr;
+  const rowH = 6;
 
-        {/* メール */}
-        <div>
-          <label className="text-xs text-gray-500 block mb-1">メール</label>
-          <input
-            type="text"
-            inputMode="email"
-            placeholder="info@example.com"
-            value={s.email}
-            onChange={(e) => upd("email", e.target.value)}
-            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
-              focus:outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </div>
-      </div>
+  txt("Subtotal", labelX, sy, { size:8.5, color:"#555555" });
+  txt(`\\${fmt(calc.subtotal)}`, valueX, sy, { size:8.5, align:"right", color:"#333333" });
+  sy += rowH;
 
-      {/* 振込先 */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-        <label className="block text-sm font-bold text-gray-700 mb-2">🏦 振込先情報</label>
-        <textarea
-          placeholder={"○○銀行 ○○支店\n普通 1234567\n口座名義：タナカ タロウ"}
-          value={s.bankInfo}
-          onChange={(e) => upd("bankInfo", e.target.value)}
-          rows={4}
-          className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
-            focus:outline-none focus:ring-2 focus:ring-orange-400"
-        />
-      </div>
+  if (calc.discountAmount > 0) {
+    txt("Discount", labelX, sy, { size:8.5, color:"#555555" });
+    txt(`-\\${fmt(calc.discountAmount)}`, valueX, sy, { size:8.5, align:"right", color:"#cc3333" });
+    sy += rowH;
+  }
 
-      {/* 保存 */}
-      <button
-        type="button"
-        onClick={handleSave}
-        className={`w-full py-4 rounded-2xl font-black text-base shadow-lg transition-colors ${
-          saved
-            ? "bg-green-500 text-white"
-            : "bg-orange-500 hover:bg-orange-600 text-white"
-        }`}
-      >
-        {saved ? "✅ 保存しました！" : isFirst ? "設定して始める →" : "💾 保存する"}
-      </button>
-    </div>
-  );
-}
+  txt(`Tax (${estimate.taxRate}%)`, labelX, sy, { size:8.5, color:"#555555" });
+  txt(`\\${fmt(calc.taxAmount)}`, valueX, sy, { size:8.5, align:"right", color:"#333333" });
+  sy += rowH+1;
 
-// =============================================
-// デフォルトエクスポート：Suspense でラップ
-// =============================================
-export default function SettingsPage() {
-  return (
-    <Suspense fallback={<div className="flex items-center justify-center py-20 text-gray-400">読み込み中...</div>}>
-      <SettingsPageInner />
-    </Suspense>
-  );
+  line(labelX-2, sy-1, valueX, sy-1, "#1b3a6b", 0.4);
+  fillRect(labelX-2, sy, valueX-labelX+2, 10, "#1b3a6b");
+  txt("TOTAL (tax incl.)", labelX, sy+4, { size:7.5, bold:true, color:"#aac4e8" });
+  txt(`\\${fmt(calc.total)}`, valueX-1, sy+7.5, { size:13, bold:true, color:"#ffffff", align:"right" });
+  sy += 14;
+
+  if (estimate.note || company.bankInfo) {
+    sy += 2;
+    line(ml, sy, pageW-mr, sy, "#cccccc", 0.3);
+    sy += 5;
+    if (estimate.note) {
+      txt("Note:", ml, sy, { size:8.5, bold:true, color:"#333333" });
+      sy += 5;
+      for (const l of estimate.note.split("\n")) {
+        if (sy > pageH-15) break;
+        txt(l, ml+3, sy, { size:8, color:"#555555" });
+        sy += 5;
+      }
+      sy += 2;
+    }
+    if (company.bankInfo) {
+      txt("Bank Info:", ml, sy, { size:8.5, bold:true, color:"#333333" });
+      sy += 5;
+      for (const l of company.bankInfo.split("\n")) {
+        if (sy > pageH-15) break;
+        txt(l, ml+3, sy, { size:8, color:"#555555" });
+        sy += 5;
+      }
+    }
+  }
+
+  line(ml, pageH-10, pageW-mr, pageH-10, "#dddddd", 0.2);
+  txt("Generated by Patto-Mitsumori", pageW/2, pageH-6, { size:7, color:"#aaaaaa", align:"center" });
+
+  doc.save(`mitsumori_${estimate.clientName||"untitled"}_${estimate.issueDate}.pdf`);
 }
