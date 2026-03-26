@@ -18,7 +18,6 @@ function canUseCanvas(): boolean {
 }
 
 // ── 日本語テキストを canvas で画像化してPDFに埋め込む ─────────
-// canvas が使えない場合は何もしない（呼び出し元でフォールバック）
 function makeJpImage(
   doc: { addImage: (...args: unknown[]) => void },
   text: string,
@@ -50,6 +49,7 @@ function makeJpImage(
     '"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic","Meiryo","Noto Sans JP",sans-serif';
   const fontStr = `${bold ? "bold " : ""}${pxSize}px ${fontFamily}`;
 
+  // テキスト幅を計測
   const measure = document.createElement("canvas");
   const mctx = measure.getContext("2d")!;
   mctx.font = fontStr;
@@ -60,7 +60,8 @@ function makeJpImage(
     ? Math.min(textWidthMm, maxWidthMm)
     : textWidthMm;
   const canvasW = Math.ceil(renderWidthMm * pxPerMm * scale) + 4;
-  const canvasH = Math.ceil(size * pxPerMm * scale * 1.5);
+  // ★ 修正1: canvasH を 1.3 倍に変更
+  const canvasH = Math.ceil(size * pxPerMm * scale * 1.3);
 
   if (canvasW <= 0 || canvasH <= 0) return;
 
@@ -73,21 +74,24 @@ function makeJpImage(
   ctx.fillStyle = color;
   ctx.textBaseline = "top";
 
+  // ★ 修正2: drawX に Math.max(0, ...) を追加してはみ出し防止
   let drawX = 0;
-  if (align === "right") drawX = canvasW - textWidthPx;
-  else if (align === "center") drawX = (canvasW - textWidthPx) / 2;
+  if (align === "right") drawX = Math.max(0, canvasW - textWidthPx);
+  else if (align === "center") drawX = Math.max(0, (canvasW - textWidthPx) / 2);
 
-  ctx.fillText(text, drawX, pxSize * 0.1);
+  ctx.fillText(text, drawX, pxSize * 0.05);
 
   const imgData = canvas.toDataURL("image/png");
   const imgWmm = renderWidthMm;
   const imgHmm = canvasH / (pxPerMm * scale);
 
+  // ★ 修正3: align に応じたPDF X座標（imgWmm ベースで計算）
   let pdfX = x;
-  if (align === "right") pdfX = x - renderWidthMm;
-  else if (align === "center") pdfX = x - renderWidthMm / 2;
+  if (align === "right") pdfX = x - imgWmm;
+  else if (align === "center") pdfX = x - imgWmm / 2;
 
-  const pdfY = y - imgHmm * 0.75;
+  // ★ 修正4: pdfY を y - imgHmm に変更
+  const pdfY = y - imgHmm;
 
   doc.addImage(imgData, "PNG", pdfX, pdfY, imgWmm, imgHmm);
 }
@@ -129,7 +133,10 @@ export async function downloadEstimatePDF(
   ): void {
     if (!text || text.trim() === "") return;
     if (canUseCanvas()) {
-      makeJpImage(doc as unknown as { addImage: (...args: unknown[]) => void }, text, x, y, opts);
+      makeJpImage(
+        doc as unknown as { addImage: (...args: unknown[]) => void },
+        text, x, y, opts
+      );
     } else {
       const { size = 10, bold = false, color = "#000000", align = "left" } = opts;
       doc.setFont("helvetica", bold ? "bold" : "normal");
@@ -151,10 +158,8 @@ export async function downloadEstimatePDF(
   }
 
   function drawLine(
-    x1: number, y1: number,
-    x2: number, y2: number,
-    hex = "#cccccc",
-    lw = 0.3
+    x1: number, y1: number, x2: number, y2: number,
+    hex = "#cccccc", lw = 0.3
   ): void {
     const r = parseInt(hex.slice(1, 3), 16);
     const g = parseInt(hex.slice(3, 5), 16);
@@ -164,11 +169,11 @@ export async function downloadEstimatePDF(
     doc.line(x1, y1, x2, y2);
   }
 
-  // ── 1. タイトル ──
+  // 1. タイトル
   jpText("見　積　書", pageW / 2, 17, { size: 18, bold: true, color: "#1b3a6b", align: "center" });
   jpText(`発行日：${estimate.issueDate}`, pageW - mr, 14, { size: 8, color: "#666666", align: "right" });
 
-  // ── 2. 宛先（左）＆ 発行者（右） ──
+  // 2. 宛先（左）＆ 発行者（右）
   const colLeft = ml;
   const colRightEnd = pageW - mr;
   let ly = 28;
@@ -206,11 +211,11 @@ export async function downloadEstimatePDF(
     ry += sz * 0.42 + 1.8;
   }
 
-  // ── 3. 区切り線 ──
+  // 3. 区切り線
   const tableStartY = Math.max(ly, ry) + 4;
   drawLine(ml, tableStartY - 2, pageW - mr, tableStartY - 2, "#1b3a6b", 0.5);
 
-  // ── 4. 明細テーブル ──
+  // 4. 明細テーブル
   const bodyRows = estimate.items.map((item) => [
     item.name || "",
     item.quantity.toLocaleString(),
@@ -294,7 +299,7 @@ export async function downloadEstimatePDF(
     },
   });
 
-  // ── 5. 合計サマリー ──
+  // 5. 合計サマリー
   const docEx = doc as unknown as JsPDFWithAutoTable;
   let sy = docEx.lastAutoTable.finalY + 6;
   const labelX = pageW - mr - 58;
@@ -321,11 +326,12 @@ export async function downloadEstimatePDF(
   jpText(`¥${fmt(calc.total)}`, valueX - 1, sy + 8.5, { size: 13, bold: true, color: "#ffffff", align: "right" });
   sy += 15;
 
-  // ── 6. 備考・振込先 ──
+  // 6. 備考・振込先
   if (estimate.note || company.bankInfo) {
     sy += 2;
     drawLine(ml, sy, pageW - mr, sy, "#cccccc", 0.3);
     sy += 5;
+
     if (estimate.note) {
       jpText("備考：", ml, sy, { size: 8.5, bold: true, color: "#333333" });
       sy += 5.5;
@@ -336,6 +342,7 @@ export async function downloadEstimatePDF(
       }
       sy += 2;
     }
+
     if (company.bankInfo) {
       jpText("振込先：", ml, sy, { size: 8.5, bold: true, color: "#333333" });
       sy += 5.5;
@@ -347,10 +354,10 @@ export async function downloadEstimatePDF(
     }
   }
 
-  // ── 7. フッター ──
+  // 7. フッター
   drawLine(ml, pageH - 10, pageW - mr, pageH - 10, "#dddddd", 0.2);
   jpText("パッと見積 で作成", pageW / 2, pageH - 6, { size: 7, color: "#aaaaaa", align: "center" });
 
-  // ── 8. 保存 ──
+  // 8. 保存
   doc.save(`見積書_${estimate.clientName || "無題"}_${estimate.issueDate}.pdf`);
 }
