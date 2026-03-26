@@ -3,7 +3,7 @@
 // / ── 見積もり入力画面（メイン）
 // =============================================
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { Suspense, useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import LineItemRow from "@/components/LineItemRow";
 import SummaryBlock from "@/components/SummaryBlock";
@@ -42,7 +42,10 @@ const blankEstimate = (): Estimate => ({
   updatedAt: new Date().toISOString(),
 });
 
-export default function HomePage() {
+// =============================================
+// useSearchParams() を使う内部コンポーネント
+// =============================================
+function HomePageInner() {
   const router = useRouter();
   const params = useSearchParams();
   const editId = params.get("id");
@@ -58,7 +61,7 @@ export default function HomePage() {
   const [templates, setTemplates] = useState<Estimate[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
 
-  // ── est を ref で保持（useCallback の deps を安定させるため） ──
+  // est を ref で保持（useCallback の deps を安定させるため）
   const estRef = useRef(est);
   useEffect(() => { estRef.current = est; }, [est]);
 
@@ -76,27 +79,23 @@ export default function HomePage() {
     setTemplates(getEstimates().slice(0, 10));
   }, [editId, router]);
 
-  // ── 保存（useCallback は early return より前に定義） ──────────
+  // 保存（useCallback は early return より前に定義）
   const handleSave = useCallback(() => {
     const updated = { ...estRef.current, updatedAt: new Date().toISOString() };
     saveEstimate(updated);
     setEst(updated);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-  }, []); // estRef は mutable ref なので deps 不要
+  }, []);
 
-  // ─────────────────────────────────────────────────────────────
   // early return はすべての Hook 定義より後に置く
-  // ─────────────────────────────────────────────────────────────
   if (!mounted) return null;
 
   const calc = calcEstimate(est.items, est.taxRate, est.discountAmount);
 
-  // ── フィールド更新 ──────────────────────────────────────────
   const setField = <K extends keyof Estimate>(k: K, v: Estimate[K]) =>
     setEst((p) => ({ ...p, [k]: v }));
 
-  // ── 明細 CRUD ───────────────────────────────────────────────
   const updateItem = (item: LineItem) =>
     setEst((p) => ({ ...p, items: p.items.map((i) => (i.id === item.id ? item : i)) }));
   const deleteItem = (id: string) =>
@@ -104,7 +103,6 @@ export default function HomePage() {
   const addItem = () =>
     setEst((p) => ({ ...p, items: [...p.items, newItem()] }));
 
-  // ── テンプレート適用 ────────────────────────────────────────
   const applyTemplate = (tpl: Estimate) => {
     setEst((p) => ({
       ...p,
@@ -115,7 +113,6 @@ export default function HomePage() {
     setShowTemplates(false);
   };
 
-  // ── PDF出力 ─────────────────────────────────────────────────
   const handlePDF = async () => {
     if (pdfLoading) return;
     const updated = { ...est, updatedAt: new Date().toISOString() };
@@ -137,7 +134,6 @@ export default function HomePage() {
     }
   };
 
-  // ── リセット ────────────────────────────────────────────────
   const handleNew = () => {
     if (!confirm("入力内容をクリアして新規作成しますか？")) return;
     setEst(blankEstimate());
@@ -333,5 +329,16 @@ export default function HomePage() {
         </div>
       </div>
     </>
+  );
+}
+
+// =============================================
+// デフォルトエクスポート：Suspense でラップ
+// =============================================
+export default function HomePage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center py-20 text-gray-400">読み込み中...</div>}>
+      <HomePageInner />
+    </Suspense>
   );
 }

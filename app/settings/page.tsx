@@ -3,7 +3,7 @@
 // /settings ── 会社情報・ロゴ登録
 // =============================================
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getCompany, saveCompany } from "@/lib/storage";
 import { CompanySettings } from "@/lib/types";
@@ -13,7 +13,10 @@ const BLANK: CompanySettings = {
   email: "", logoBase64: "", bankInfo: "",
 };
 
-export default function SettingsPage() {
+// =============================================
+// useSearchParams() を使う内部コンポーネント
+// =============================================
+function SettingsPageInner() {
   const router = useRouter();
   const params = useSearchParams();
   const isFirst = params.get("first") === "true";
@@ -152,5 +155,16 @@ export default function SettingsPage() {
         {saved ? "✅ 保存しました！" : isFirst ? "設定して始める →" : "💾 保存する"}
       </button>
     </div>
+  );
+}
+
+// =============================================
+// デフォルトエクスポート：Suspense でラップ
+// =============================================
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center py-20 text-gray-400">読み込み中...</div>}>
+      <SettingsPageInner />
+    </Suspense>
   );
 }
