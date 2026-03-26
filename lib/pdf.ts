@@ -1,354 +1,229 @@
+"use client";
 // =============================================
-// jsPDF による PDF 生成
+// /settings ── 会社情報・ロゴ登録
 // =============================================
 
-import { Estimate, CompanySettings } from "./types";
-import { calcEstimate, fmt } from "./calc";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { getCompany, saveCompany } from "@/lib/storage";
+import { CompanySettings } from "@/lib/types";
 
-/**
- * 見積書PDFを生成してダウンロードする
- * ※ jspdf は動的インポートで読み込み（SSR回避）
- */
-export async function downloadEstimatePDF(
-  estimate: Estimate,
-  company: CompanySettings
-): Promise<void> {
-  // 動的インポート（クライアントサイドのみ）
-  const { default: jsPDF } = await import("jspdf");
-  const { default: autoTable } = await import("jspdf-autotable");
+const BLANK: CompanySettings = {
+  name: "", postalCode: "", address: "", phone: "",
+  email: "", logoBase64: "", bankInfo: "",
+};
 
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+// ── 郵便番号ハイフン自動挿入 ──────────────────────────────────
+function formatPostalCode(value: string): string {
+  const digits = value.replace(/\D/g, "").slice(0, 7);
+  if (digits.length <= 3) return digits;
+  return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+}
 
-  const calc = calcEstimate(estimate.items, estimate.taxRate, estimate.discountAmount);
+// =============================================
+// useSearchParams() を使う内部コンポーネント
+// =============================================
+function SettingsPageInner() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const isFirst = params.get("first") === "true";
 
-  // ── フォント設定（日本語はUnicode対応フォントが必要なため、
-  //    文字化け回避のためBase64埋め込みフォントではなく
-  //    標準フォントで英数字、日本語部分は別処理） ──
-  // ※ 日本語PDFはjsPDF標準フォントでは文字化けするため、
-  //    ここではNoto Sans JPをCDNから取得する方式を採用。
-  //    ただしCDN依存を避けるため、フォールバックとして
-  //    日本語テキストをcanvas経由でPNGに変換して埋め込む。
+  const [s, setS] = useState<CompanySettings>(BLANK);
+  const [saved, setSaved] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const logoRef = useRef<HTMLInputElement>(null);
 
-  const pageW = doc.internal.pageSize.getWidth();   // 210mm
-  const margin = 15;
-  const contentW = pageW - margin * 2;
+  useEffect(() => {
+    setMounted(true);
+    setS(getCompany());
+  }, []);
 
-  // ── ヘルパー：日本語テキストをcanvasでPNGに変換して埋め込む ──
-  function addJpText(
-    text: string,
-    x: number,
-    y: number,
-    opts: {
-      fontSize?: number;
-      fontWeight?: string;
-      color?: string;
-      align?: "left" | "right" | "center";
-      maxWidth?: number;
-    } = {}
-  ) {
-    const {
-      fontSize = 10,
-      fontWeight = "normal",
-      color = "#000000",
-      align = "left",
-      maxWidth,
-    } = opts;
+  if (!mounted) return null;
 
-    if (!text) return;
+  const upd = (k: keyof CompanySettings, v: string) =>
+    setS((p) => ({ ...p, [k]: v }));
 
-    const canvas = document.createElement("canvas");
-    const scale = 3; // 高解像度
-    const pxPerMm = 3.7795; // 1mm = 3.7795px (96dpi)
-    const pxFontSize = fontSize * pxPerMm * scale;
+  const handlePostalCode = (v: string) => {
+    upd("postalCode", formatPostalCode(v));
+  };
 
-    const ctx = canvas.getContext("2d")!;
-    ctx.font = `${fontWeight} ${pxFontSize}px "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif`;
+  const handleLogo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => upd("logoBase64", ev.target?.result as string);
+    reader.readAsDataURL(file);
+  };
 
-    const textPx = ctx.measureText(text).width;
-    const textMm = textPx / (pxPerMm * scale);
+  const handleSave = () => {
+    saveCompany(s);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+    if (isFirst) router.push("/");
+  };
 
-    // maxWidthが指定されている場合はクリップ
-    const renderWidthMm = maxWidth ? Math.min(textMm, maxWidth) : textMm;
-    const canvasWidthPx = Math.ceil(renderWidthMm * pxPerMm * scale) + 4;
-    const canvasHeightPx = Math.ceil(fontSize * pxPerMm * scale * 1.4);
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-2">
+        {isFirst && (
+          <span className="bg-orange-100 text-orange-700 text-xs font-bold px-2 py-1 rounded-full">
+            初回設定
+          </span>
+        )}
+        <h1 className="text-lg font-black text-gray-800">⚙️ 会社情報設定</h1>
+      </div>
 
-    canvas.width = canvasWidthPx;
-    canvas.height = canvasHeightPx;
+      {isFirst && (
+        <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 text-sm text-orange-800">
+          <p className="font-bold mb-1">🎉 ようこそ！パッと見積へ</p>
+          会社名や連絡先を設定しておくと、見積書に自動で反映されます。
+          後でいつでも変更できます。
+        </div>
+      )}
 
-    const ctx2 = canvas.getContext("2d")!;
-    ctx2.clearRect(0, 0, canvas.width, canvas.height);
-    ctx2.font = `${fontWeight} ${pxFontSize}px "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif`;
-    ctx2.fillStyle = color;
-    ctx2.textBaseline = "top";
+      {/* ロゴ */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+        <p className="text-sm font-bold text-gray-700 mb-3">🏷 会社ロゴ（任意）</p>
+        {s.logoBase64 ? (
+          <div className="flex items-center gap-3 mb-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={s.logoBase64} alt="ロゴ" className="h-14 object-contain border rounded-lg bg-gray-50 p-1" />
+            <button
+              type="button"
+              onClick={() => upd("logoBase64", "")}
+              className="text-xs text-red-500 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50"
+            >
+              削除
+            </button>
+          </div>
+        ) : (
+          <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl h-20 flex items-center justify-center mb-3 text-gray-400 text-sm">
+            ロゴ画像なし
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => logoRef.current?.click()}
+          className="text-sm bg-gray-100 hover:bg-gray-200 px-4 py-2.5 rounded-lg font-bold transition-colors"
+        >
+          📁 画像を選択
+        </button>
+        <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={handleLogo} />
+        <p className="text-xs text-gray-400 mt-2">PNG・JPG対応。見積書の右上に表示されます。</p>
+      </div>
 
-    let drawX = 0;
-    if (align === "right") drawX = canvasWidthPx - textPx;
-    else if (align === "center") drawX = (canvasWidthPx - textPx) / 2;
+      {/* 基本情報 */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm space-y-3">
+        <p className="text-sm font-bold text-gray-700">📝 基本情報</p>
 
-    ctx2.fillText(text, drawX, 2);
+        {/* 会社名 */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">
+            会社名・屋号 <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="text"
+            placeholder="○○建設、田中塗装店 など"
+            value={s.name}
+            onChange={(e) => upd("name", e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
 
-    const imgData = canvas.toDataURL("image/png");
-    const imgW = renderWidthMm;
-    const imgH = (canvasHeightPx / (pxPerMm * scale));
+        {/* 郵便番号（ハイフン自動挿入） */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">郵便番号</label>
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="123-4567"
+            value={s.postalCode}
+            onChange={(e) => handlePostalCode(e.target.value)}
+            maxLength={8}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
 
-    let drawXmm = x;
-    if (align === "right") drawXmm = x - renderWidthMm;
-    else if (align === "center") drawXmm = x - renderWidthMm / 2;
+        {/* 住所 */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">住所</label>
+          <input
+            type="text"
+            placeholder="大阪府○○市..."
+            value={s.address}
+            onChange={(e) => upd("address", e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
 
-    doc.addImage(imgData, "PNG", drawXmm, y - imgH * 0.8, imgW, imgH);
-  }
+        {/* 電話番号 */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">電話番号</label>
+          <input
+            type="text"
+            inputMode="tel"
+            placeholder="090-XXXX-XXXX"
+            value={s.phone}
+            onChange={(e) => upd("phone", e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
 
-  // ════════════════════════════════════════
-  // タイトル「見積書」
-  // ════════════════════════════════════════
-  addJpText("見　積　書", pageW / 2, 20, {
-    fontSize: 18,
-    fontWeight: "bold",
-    align: "center",
-  });
+        {/* メール */}
+        <div>
+          <label className="text-xs text-gray-500 block mb-1">メール</label>
+          <input
+            type="text"
+            inputMode="email"
+            placeholder="info@example.com"
+            value={s.email}
+            onChange={(e) => upd("email", e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+              focus:outline-none focus:ring-2 focus:ring-orange-400"
+          />
+        </div>
+      </div>
 
-  // ── 発行日
-  addJpText(`発行日：${estimate.issueDate}`, pageW - margin, 28, {
-    fontSize: 9,
-    color: "#666666",
-    align: "right",
-  });
+      {/* 振込先 */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+        <label className="block text-sm font-bold text-gray-700 mb-2">🏦 振込先情報</label>
+        <textarea
+          placeholder={"○○銀行 ○○支店\n普通 1234567\n口座名義：タナカ タロウ"}
+          value={s.bankInfo}
+          onChange={(e) => upd("bankInfo", e.target.value)}
+          rows={4}
+          className="w-full border border-gray-300 rounded-lg px-3 py-3 text-sm
+            focus:outline-none focus:ring-2 focus:ring-orange-400"
+        />
+      </div>
 
-  // ════════════════════════════════════════
-  // 宛先ブロック（左）
-  // ════════════════════════════════════════
-  addJpText(`${estimate.clientName || "　"} 御中`, margin, 40, {
-    fontSize: 13,
-    fontWeight: "bold",
-  });
+      {/* 保存 */}
+      <button
+        type="button"
+        onClick={handleSave}
+        className={`w-full py-4 rounded-2xl font-black text-base shadow-lg transition-colors ${
+          saved
+            ? "bg-green-500 text-white"
+            : "bg-orange-500 hover:bg-orange-600 text-white"
+        }`}
+      >
+        {saved ? "✅ 保存しました！" : isFirst ? "設定して始める →" : "💾 保存する"}
+      </button>
+    </div>
+  );
+}
 
-  // 宛先下線
-  doc.setDrawColor(40, 40, 40);
-  doc.setLineWidth(0.5);
-  doc.line(margin, 41, margin + 80, 41);
-
-  addJpText(`件名：${estimate.title}`, margin, 47, {
-    fontSize: 10,
-    color: "#444444",
-  });
-
-  addJpText(`合計金額：¥${fmt(calc.total)}（税込）`, margin, 54, {
-    fontSize: 12,
-    fontWeight: "bold",
-    color: "#1d4ed8",
-  });
-
-  // ════════════════════════════════════════
-  // 発行者ブロック（右）
-  // ════════════════════════════════════════
-  const rightX = pageW - margin;
-  let ry = 37;
-
-  // ロゴ画像
-  if (company.logoBase64) {
-    try {
-      const logoH = 12;
-      const logoW = 30;
-      doc.addImage(company.logoBase64, "PNG", rightX - logoW, ry, logoW, logoH);
-      ry += logoH + 2;
-    } catch {
-      // ロゴ読み込み失敗は無視
-    }
-  }
-
-  const companyLines: [string, number][] = [
-    [company.name, 10],
-    [company.postalCode ? `〒${company.postalCode}` : "", 8],
-    [company.address, 8],
-    [company.phone ? `TEL: ${company.phone}` : "", 8],
-    [company.email, 8],
-  ];
-  for (const [text, fs] of companyLines) {
-    if (!text) continue;
-    addJpText(text, rightX, ry, { fontSize: fs, align: "right" });
-    ry += fs * 0.45 + 1.5;
-  }
-
-  // ════════════════════════════════════════
-  // 明細テーブル
-  // ════════════════════════════════════════
-  const tableTop = 62;
-
-  // テーブルヘッダー（日本語はcanvas経由で後から上書き）
-  autoTable(doc, {
-    startY: tableTop,
-    margin: { left: margin, right: margin },
-    head: [["品目", "数量", "単位", "単価", "金額"]],
-    body: estimate.items.map((item) => [
-      item.name || "",
-      item.quantity.toString(),
-      item.unit,
-      `\\${fmt(item.unitPrice)}`,
-      `\\${fmt(item.quantity * item.unitPrice)}`,
-    ]),
-    // 空行パディング（最低5行）
-    ...(estimate.items.length < 5
-      ? {
-          body: [
-            ...estimate.items.map((item) => [
-              item.name || "",
-              item.quantity.toString(),
-              item.unit,
-              `\\${fmt(item.unitPrice)}`,
-              `\\${fmt(item.quantity * item.unitPrice)}`,
-            ]),
-            ...Array.from({ length: 5 - estimate.items.length }).map(() => [
-              "",
-              "",
-              "",
-              "",
-              "",
-            ]),
-          ],
-        }
-      : {}),
-    styles: {
-      font: "helvetica",
-      fontSize: 9,
-      cellPadding: 2.5,
-    },
-    headStyles: {
-      fillColor: [37, 99, 235], // blue-600
-      textColor: 255,
-      fontStyle: "bold",
-      halign: "center",
-    },
-    columnStyles: {
-      0: { cellWidth: "auto" },
-      1: { halign: "right", cellWidth: 16 },
-      2: { halign: "center", cellWidth: 14 },
-      3: { halign: "right", cellWidth: 28 },
-      4: { halign: "right", cellWidth: 28 },
-    },
-    alternateRowStyles: { fillColor: [248, 250, 252] },
-    didDrawCell: (data) => {
-      // ヘッダーの日本語を上書き
-      if (data.section === "head") {
-        const labels = ["品目", "数量", "単位", "単価", "金額"];
-        const label = labels[data.column.index];
-        if (label) {
-          addJpText(
-            label,
-            data.cell.x + data.cell.width / 2,
-            data.cell.y + data.cell.height * 0.65,
-            { fontSize: 9, fontWeight: "bold", color: "#ffffff", align: "center" }
-          );
-        }
-      }
-      // 品目列の日本語テキスト
-      if (data.section === "body" && data.column.index === 0) {
-        const text = estimate.items[data.row.index]?.name ?? "";
-        if (text) {
-          // 既存テキストをクリア（白で塗る）
-          doc.setFillColor(
-            data.row.index % 2 === 0 ? 255 : 248
-          );
-          doc.rect(
-            data.cell.x + 0.5,
-            data.cell.y + 0.5,
-            data.cell.width - 1,
-            data.cell.height - 1,
-            "F"
-          );
-          addJpText(text, data.cell.x + 2, data.cell.y + data.cell.height * 0.7, {
-            fontSize: 9,
-            maxWidth: data.cell.width - 4,
-          });
-        }
-      }
-      // 単位列
-      if (data.section === "body" && data.column.index === 2) {
-        const unit = estimate.items[data.row.index]?.unit ?? "";
-        if (unit) {
-          doc.setFillColor(data.row.index % 2 === 0 ? 255 : 248);
-          doc.rect(data.cell.x + 0.5, data.cell.y + 0.5, data.cell.width - 1, data.cell.height - 1, "F");
-          addJpText(unit, data.cell.x + data.cell.width / 2, data.cell.y + data.cell.height * 0.7, {
-            fontSize: 9,
-            align: "center",
-          });
-        }
-      }
-    },
-  });
-
-  // ════════════════════════════════════════
-  // 合計サマリー（右寄せ）
-  // ════════════════════════════════════════
-  // @ts-expect-error jspdf-autotable adds lastAutoTable
-  const afterTable = (doc as any).lastAutoTable.finalY + 4;
-  const sumX = pageW - margin;
-  const sumLabelX = sumX - 45;
-  let sy = afterTable + 5;
-
-  const summaryRows: [string, string, boolean][] = [
-    ["小計", `¥${fmt(calc.subtotal)}`, false],
-    ...(calc.discountAmount > 0
-      ? ([["値引き", `-¥${fmt(calc.discountAmount)}`, false]] as [string, string, boolean][])
-      : []),
-    [`消費税(${estimate.taxRate}%)`, `¥${fmt(calc.taxAmount)}`, false],
-  ];
-
-  for (const [label, value] of summaryRows) {
-    addJpText(label, sumLabelX, sy, { fontSize: 9, color: "#555555" });
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
-    doc.setTextColor(60, 60, 60);
-    doc.text(value, sumX, sy, { align: "right" });
-    sy += 6;
-  }
-
-  // 合計ボックス
-  doc.setFillColor(239, 246, 255); // blue-50
-  doc.roundedRect(sumLabelX - 5, sy - 1, sumX - sumLabelX + 5 + margin - margin, 9, 1, 1, "F");
-  addJpText("合計（税込）", sumLabelX, sy + 6, {
-    fontSize: 10,
-    fontWeight: "bold",
-    color: "#1e3a8a",
-  });
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  doc.setTextColor(29, 78, 216);
-  doc.text(`¥${fmt(calc.total)}`, sumX, sy + 6, { align: "right" });
-  sy += 14;
-
-  // ════════════════════════════════════════
-  // 備考・振込先
-  // ════════════════════════════════════════
-  if (estimate.note || company.bankInfo) {
-    doc.setDrawColor(200, 200, 200);
-    doc.setLineWidth(0.3);
-    doc.line(margin, sy, pageW - margin, sy);
-    sy += 5;
-
-    if (estimate.note) {
-      addJpText("備考", margin, sy, { fontSize: 9, fontWeight: "bold" });
-      sy += 5;
-      const noteLines = estimate.note.split("\n");
-      for (const line of noteLines) {
-        addJpText(line, margin + 2, sy, { fontSize: 8.5, color: "#444444" });
-        sy += 5;
-      }
-    }
-
-    if (company.bankInfo) {
-      addJpText("振込先", margin, sy, { fontSize: 9, fontWeight: "bold" });
-      sy += 5;
-      const bankLines = company.bankInfo.split("\n");
-      for (const line of bankLines) {
-        addJpText(line, margin + 2, sy, { fontSize: 8.5, color: "#444444" });
-        sy += 5;
-      }
-    }
-  }
-
-  // ════════════════════════════════════════
-  // ダウンロード
-  // ════════════════════════════════════════
-  const filename = `見積書_${estimate.clientName || "無題"}_${estimate.issueDate}.pdf`;
-  doc.save(filename);
+// =============================================
+// デフォルトエクスポート：Suspense でラップ
+// =============================================
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center py-20 text-gray-400">読み込み中...</div>}>
+      <SettingsPageInner />
+    </Suspense>
+  );
 }
