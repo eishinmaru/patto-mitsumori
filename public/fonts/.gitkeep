@@ -1,0 +1,6 @@
+このディレクトリにNotoSansJPフォントを配置してください。
+npm run download-fonts を実行すると自動的にダウンロードされます。
+
+必要なファイル:
+- NotoSansJP-Regular.ttf
+- NotoSansJP-Bold.ttf

@@ -1,18 +1,25 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typescript: {
-    // 型エラーがあってもビルドを続行する
     ignoreBuildErrors: true,
   },
   eslint: {
-    // ESLintエラーがあってもビルドを続行する
     ignoreDuringBuilds: true,
   },
-  // jspdf・jspdf-autotable はブラウザ専用ライブラリのため
-  // サーバーサイドのバンドルから除外する
+  // jspdf はブラウザ専用のためサーバーバンドルから除外
   serverExternalPackages: ["jspdf", "jspdf-autotable", "canvg", "html2canvas"],
   async headers() {
     return [
+      // TTFフォントを正しいContent-Typeで配信
+      {
+        source: "/fonts/:path*.ttf",
+        headers: [
+          { key: "Content-Type", value: "font/ttf" },
+          // キャッシュ：1年間（フォントは変更されないため）
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+          { key: "Access-Control-Allow-Origin", value: "*" },
+        ],
+      },
       {
         source: "/(.*)",
         headers: [
