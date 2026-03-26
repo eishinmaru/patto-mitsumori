@@ -1,8 +1,7 @@
 // =============================================
 // jsPDF による見積書PDF生成
-// ・このファイルは動的import経由でクライアントのみ実行される
-// ・document が存在する場合のみ canvas を使って日本語を画像化
-// ・document が存在しない場合は ASCII フォールバック
+// 日本語対応：ブラウザ実行時にCDNからNotoSansJPフォントをfetchして埋め込む
+// canvas方式は完全廃止
 // =============================================
 
 import { Estimate, CompanySettings } from "./types";
@@ -12,95 +11,58 @@ interface JsPDFWithAutoTable {
   lastAutoTable: { finalY: number };
 }
 
-// ── canvas が使える環境かどうか ──────────────────────────────
-function canUseCanvas(): boolean {
-  return typeof document !== "undefined";
+// ── フォントキャッシュ（同一セッション内で再fetchしない） ──────
+let cachedFontBase64Regular: string | null = null;
+let cachedFontBase64Bold: string | null = null;
+
+async function fetchFontAsBase64(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`フォント取得失敗: ${url} (${res.status})`);
+  const buffer = await res.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
-// ── 日本語テキストを canvas で画像化してPDFに埋め込む ─────────
-function makeJpImage(
-  doc: { addImage: (...args: unknown[]) => void },
-  text: string,
-  x: number,
-  y: number,
-  opts: {
-    size?: number;
-    bold?: boolean;
-    color?: string;
-    align?: "left" | "right" | "center";
-    maxWidthMm?: number;
-  } = {}
-): void {
-  if (!text || text.trim() === "") return;
-  if (!canUseCanvas()) return;
+async function registerJapaneseFont(doc: {
+  addFileToVFS: (filename: string, base64: string) => void;
+  addFont: (filename: string, fontName: string, style: string) => void;
+  setFont: (fontName: string, style?: string) => void;
+}): Promise<{ fontName: string; available: boolean }> {
+  const FONT_NAME = "NotoSansJP";
+  const BASE_URL = "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/fonts/";
 
-  const {
-    size = 10,
-    bold = false,
-    color = "#000000",
-    align = "left",
-    maxWidthMm,
-  } = opts;
+  try {
+    if (!cachedFontBase64Regular) {
+      cachedFontBase64Regular = await fetchFontAsBase64(`${BASE_URL}NotoSansJP-Regular.ttf`);
+    }
+    doc.addFileToVFS("NotoSansJP-Regular.ttf", cachedFontBase64Regular);
+    doc.addFont("NotoSansJP-Regular.ttf", FONT_NAME, "normal");
 
-  const scale = 4;
-  const pxPerMm = 3.7795;
-  const pxSize = size * pxPerMm * scale;
-  const fontFamily =
-    '"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic","Meiryo","Noto Sans JP",sans-serif';
-  const fontStr = `${bold ? "bold " : ""}${pxSize}px ${fontFamily}`;
+    if (!cachedFontBase64Bold) {
+      cachedFontBase64Bold = await fetchFontAsBase64(`${BASE_URL}NotoSansJP-Bold.ttf`);
+    }
+    doc.addFileToVFS("NotoSansJP-Bold.ttf", cachedFontBase64Bold);
+    doc.addFont("NotoSansJP-Bold.ttf", FONT_NAME, "bold");
 
-  // テキスト幅を計測
-  const measure = document.createElement("canvas");
-  const mctx = measure.getContext("2d")!;
-  mctx.font = fontStr;
-  const textWidthPx = mctx.measureText(text).width;
-  const textWidthMm = textWidthPx / (pxPerMm * scale);
+    doc.setFont(FONT_NAME, "normal");
+    return { fontName: FONT_NAME, available: true };
 
-  const renderWidthMm = maxWidthMm
-    ? Math.min(textWidthMm, maxWidthMm)
-    : textWidthMm;
-  const canvasW = Math.ceil(renderWidthMm * pxPerMm * scale) + 4;
-  // ★ 修正1: canvasH を 1.3 倍に変更
-  const canvasH = Math.ceil(size * pxPerMm * scale * 1.3);
-
-  if (canvasW <= 0 || canvasH <= 0) return;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = canvasW;
-  canvas.height = canvasH;
-  const ctx = canvas.getContext("2d")!;
-  ctx.clearRect(0, 0, canvasW, canvasH);
-  ctx.font = fontStr;
-  ctx.fillStyle = color;
-  ctx.textBaseline = "top";
-
-  // ★ 修正2: drawX に Math.max(0, ...) を追加してはみ出し防止
-  let drawX = 0;
-  if (align === "right") drawX = Math.max(0, canvasW - textWidthPx);
-  else if (align === "center") drawX = Math.max(0, (canvasW - textWidthPx) / 2);
-
-  ctx.fillText(text, drawX, pxSize * 0.05);
-
-  const imgData = canvas.toDataURL("image/png");
-  const imgWmm = renderWidthMm;
-  const imgHmm = canvasH / (pxPerMm * scale);
-
-  // ★ 修正3: align に応じたPDF X座標（imgWmm ベースで計算）
-  let pdfX = x;
-  if (align === "right") pdfX = x - imgWmm;
-  else if (align === "center") pdfX = x - imgWmm / 2;
-
-  // ★ 修正4: pdfY を y - imgHmm に変更
-  const pdfY = y - imgHmm;
-
-  doc.addImage(imgData, "PNG", pdfX, pdfY, imgWmm, imgHmm);
+  } catch (e) {
+    console.warn("NotoSansJP フォント取得失敗。フォールバックを使用:", e);
+    doc.setFont("helvetica", "normal");
+    return { fontName: "helvetica", available: false };
+  }
 }
 
 export async function downloadEstimatePDF(
   estimate: Estimate,
   company: CompanySettings
 ): Promise<void> {
-  if (!canUseCanvas()) {
+  if (typeof window === "undefined") {
     throw new Error("PDF生成はブラウザ環境でのみ実行できます");
   }
 
@@ -108,18 +70,22 @@ export async function downloadEstimatePDF(
   const { default: autoTable } = await import("jspdf-autotable");
 
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-  const calc = calcEstimate(
-    estimate.items,
-    estimate.taxRate,
-    estimate.discountAmount
-  );
+  const calc = calcEstimate(estimate.items, estimate.taxRate, estimate.discountAmount);
 
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const ml = 15;
   const mr = 15;
 
-  function jpText(
+  const { fontName, available: fontAvailable } = await registerJapaneseFont(
+    doc as unknown as {
+      addFileToVFS: (filename: string, base64: string) => void;
+      addFont: (filename: string, fontName: string, style: string) => void;
+      setFont: (fontName: string, style?: string) => void;
+    }
+  );
+
+  function txt(
     text: string,
     x: number,
     y: number,
@@ -128,23 +94,20 @@ export async function downloadEstimatePDF(
       bold?: boolean;
       color?: string;
       align?: "left" | "right" | "center";
-      maxWidthMm?: number;
+      maxWidth?: number;
     } = {}
   ): void {
-    if (!text || text.trim() === "") return;
-    if (canUseCanvas()) {
-      makeJpImage(
-        doc as unknown as { addImage: (...args: unknown[]) => void },
-        text, x, y, opts
-      );
+    if (!text) return;
+    const { size = 10, bold = false, color = "#000000", align = "left", maxWidth } = opts;
+    doc.setFont(fontName, bold ? "bold" : "normal");
+    doc.setFontSize(size);
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    doc.setTextColor(r, g, b);
+    if (maxWidth) {
+      doc.text(text, x, y, { align, maxWidth });
     } else {
-      const { size = 10, bold = false, color = "#000000", align = "left" } = opts;
-      doc.setFont("helvetica", bold ? "bold" : "normal");
-      doc.setFontSize(size);
-      const r = parseInt(color.slice(1, 3), 16);
-      const g = parseInt(color.slice(3, 5), 16);
-      const b = parseInt(color.slice(5, 7), 16);
-      doc.setTextColor(r, g, b);
       doc.text(text, x, y, { align });
     }
   }
@@ -157,10 +120,7 @@ export async function downloadEstimatePDF(
     doc.rect(x, y, w, h, "F");
   }
 
-  function drawLine(
-    x1: number, y1: number, x2: number, y2: number,
-    hex = "#cccccc", lw = 0.3
-  ): void {
+  function drawLine(x1: number, y1: number, x2: number, y2: number, hex = "#cccccc", lw = 0.3): void {
     const r = parseInt(hex.slice(1, 3), 16);
     const g = parseInt(hex.slice(3, 5), 16);
     const b = parseInt(hex.slice(5, 7), 16);
@@ -170,8 +130,8 @@ export async function downloadEstimatePDF(
   }
 
   // 1. タイトル
-  jpText("見　積　書", pageW / 2, 17, { size: 18, bold: true, color: "#1b3a6b", align: "center" });
-  jpText(`発行日：${estimate.issueDate}`, pageW - mr, 14, { size: 8, color: "#666666", align: "right" });
+  txt("見　積　書", pageW / 2, 17, { size: 18, bold: true, color: "#1b3a6b", align: "center" });
+  txt(`発行日：${estimate.issueDate}`, pageW - mr, 14, { size: 8, color: "#666666", align: "right" });
 
   // 2. 宛先（左）＆ 発行者（右）
   const colLeft = ml;
@@ -179,22 +139,23 @@ export async function downloadEstimatePDF(
   let ly = 28;
   let ry = 28;
 
-  jpText(`${estimate.clientName || "　"} 御中`, colLeft, ly, { size: 13, bold: true, color: "#1b3a6b" });
+  txt(`${estimate.clientName || "　"} 御中`, colLeft, ly, { size: 13, bold: true, color: "#1b3a6b" });
   ly += 1;
   drawLine(colLeft, ly, colLeft + 85, ly, "#1b3a6b", 0.5);
-  ly += 5;
-  jpText(`件名：${estimate.title || "　"}`, colLeft, ly, { size: 9, color: "#444444" });
   ly += 6;
 
+  txt(`件名：${estimate.title || "　"}`, colLeft, ly, { size: 9, color: "#444444" });
+  ly += 7;
+
   fillRect(colLeft, ly, 85, 13, "#1b3a6b");
-  jpText("合計金額（税込）", colLeft + 2, ly + 5, { size: 7, color: "#aac4e8" });
-  jpText(`¥${fmt(calc.total)}`, colLeft + 83, ly + 11, { size: 13, bold: true, color: "#ffffff", align: "right" });
-  ly += 17;
+  txt("合計金額（税込）", colLeft + 3, ly + 5, { size: 7, color: "#aac4e8" });
+  txt(`¥${fmt(calc.total)}`, colLeft + 82, ly + 10, { size: 13, bold: true, color: "#ffffff", align: "right" });
+  ly += 18;
 
   if (company.logoBase64) {
     try {
       doc.addImage(company.logoBase64, "PNG", colRightEnd - 35, ry - 2, 35, 12);
-      ry += 14;
+      ry += 15;
     } catch { /* ロゴ読み込み失敗は無視 */ }
   }
 
@@ -207,8 +168,8 @@ export async function downloadEstimatePDF(
   ];
   for (const [t, sz, bold] of companyLines) {
     if (!t) continue;
-    jpText(t, colRightEnd, ry, { size: sz, bold, color: "#222222", align: "right" });
-    ry += sz * 0.42 + 1.8;
+    txt(t, colRightEnd, ry, { size: sz, bold, color: "#222222", align: "right" });
+    ry += sz * 0.42 + 2;
   }
 
   // 3. 区切り線
@@ -231,20 +192,22 @@ export async function downloadEstimatePDF(
     head: [["品目", "数量", "単位", "単価", "金額"]],
     body: bodyRows,
     styles: {
-      font: "helvetica",
+      font: fontName,
       fontSize: 9,
       cellPadding: { top: 3, bottom: 3, left: 3, right: 3 },
       lineColor: [220, 220, 220],
       lineWidth: 0.2,
     },
     headStyles: {
+      font: fontName,
       fillColor: [27, 58, 107],
       textColor: [255, 255, 255],
       fontStyle: "bold",
-      fontSize: 8.5,
+      fontSize: 9,
       halign: "center",
       minCellHeight: 9,
     },
+    bodyStyles: { font: fontName },
     columnStyles: {
       0: { cellWidth: "auto", halign: "left" },
       1: { cellWidth: 14, halign: "center" },
@@ -253,110 +216,70 @@ export async function downloadEstimatePDF(
       4: { cellWidth: 30, halign: "right" },
     },
     alternateRowStyles: { fillColor: [245, 244, 240] },
-    didDrawCell: (data) => {
-      if (!canUseCanvas()) return;
-
-      if (data.section === "head") {
-        const labels = ["品目", "数量", "単位", "単価", "金額"];
-        const label = labels[data.column.index];
-        if (!label) return;
-        makeJpImage(
-          doc as unknown as { addImage: (...args: unknown[]) => void },
-          label,
-          data.cell.x + data.cell.width / 2,
-          data.cell.y + data.cell.height / 2 + 1.5,
-          { size: 8.5, bold: true, color: "#ffffff", align: "center" }
-        );
-      }
-
-      if (data.section === "body" && data.column.index === 0) {
-        const rowItem = estimate.items[data.row.index];
-        if (!rowItem?.name) return;
-        const bgHex = data.row.index % 2 === 0 ? "#ffffff" : "#f5f4f0";
-        fillRect(data.cell.x + 0.3, data.cell.y + 0.3, data.cell.width - 0.6, data.cell.height - 0.6, bgHex);
-        makeJpImage(
-          doc as unknown as { addImage: (...args: unknown[]) => void },
-          rowItem.name,
-          data.cell.x + 3,
-          data.cell.y + data.cell.height / 2 + 1.5,
-          { size: 9, color: "#000000", align: "left", maxWidthMm: data.cell.width - 6 }
-        );
-      }
-
-      if (data.section === "body" && data.column.index === 2) {
-        const rowItem = estimate.items[data.row.index];
-        if (!rowItem?.unit) return;
-        const bgHex = data.row.index % 2 === 0 ? "#ffffff" : "#f5f4f0";
-        fillRect(data.cell.x + 0.3, data.cell.y + 0.3, data.cell.width - 0.6, data.cell.height - 0.6, bgHex);
-        makeJpImage(
-          doc as unknown as { addImage: (...args: unknown[]) => void },
-          rowItem.unit,
-          data.cell.x + data.cell.width / 2,
-          data.cell.y + data.cell.height / 2 + 1.5,
-          { size: 9, color: "#000000", align: "center" }
-        );
-      }
-    },
   });
 
   // 5. 合計サマリー
   const docEx = doc as unknown as JsPDFWithAutoTable;
-  let sy = docEx.lastAutoTable.finalY + 6;
-  const labelX = pageW - mr - 58;
+  let sy = docEx.lastAutoTable.finalY + 7;
+  const labelX = pageW - mr - 60;
   const valueX = pageW - mr;
-  const rowH = 6.5;
+  const rowH = 7;
 
-  jpText("小計", labelX, sy, { size: 8.5, color: "#555555" });
-  jpText(`¥${fmt(calc.subtotal)}`, valueX, sy, { size: 8.5, color: "#333333", align: "right" });
+  txt("小計", labelX, sy, { size: 9, color: "#555555" });
+  txt(`¥${fmt(calc.subtotal)}`, valueX, sy, { size: 9, color: "#333333", align: "right" });
   sy += rowH;
 
   if (calc.discountAmount > 0) {
-    jpText("値引き", labelX, sy, { size: 8.5, color: "#555555" });
-    jpText(`-¥${fmt(calc.discountAmount)}`, valueX, sy, { size: 8.5, color: "#cc3333", align: "right" });
+    txt("値引き", labelX, sy, { size: 9, color: "#555555" });
+    txt(`-¥${fmt(calc.discountAmount)}`, valueX, sy, { size: 9, color: "#cc3333", align: "right" });
     sy += rowH;
   }
 
-  jpText(`消費税（${estimate.taxRate}%）`, labelX, sy, { size: 8.5, color: "#555555" });
-  jpText(`¥${fmt(calc.taxAmount)}`, valueX, sy, { size: 8.5, color: "#333333", align: "right" });
-  sy += rowH + 1;
+  txt(`消費税（${estimate.taxRate}%）`, labelX, sy, { size: 9, color: "#555555" });
+  txt(`¥${fmt(calc.taxAmount)}`, valueX, sy, { size: 9, color: "#333333", align: "right" });
+  sy += rowH + 2;
 
-  drawLine(labelX - 2, sy - 1, valueX, sy - 1, "#1b3a6b", 0.4);
-  fillRect(labelX - 2, sy, valueX - labelX + 2, 11, "#1b3a6b");
-  jpText("合計金額（税込）", labelX, sy + 5, { size: 7.5, bold: true, color: "#aac4e8" });
-  jpText(`¥${fmt(calc.total)}`, valueX - 1, sy + 8.5, { size: 13, bold: true, color: "#ffffff", align: "right" });
-  sy += 15;
+  drawLine(labelX - 2, sy - 2, valueX, sy - 2, "#1b3a6b", 0.4);
+  fillRect(labelX - 2, sy, valueX - labelX + 2, 12, "#1b3a6b");
+  txt("合計金額（税込）", labelX, sy + 5, { size: 7.5, bold: true, color: "#aac4e8" });
+  txt(`¥${fmt(calc.total)}`, valueX - 1, sy + 9, { size: 13, bold: true, color: "#ffffff", align: "right" });
+  sy += 17;
 
   // 6. 備考・振込先
   if (estimate.note || company.bankInfo) {
-    sy += 2;
+    sy += 3;
     drawLine(ml, sy, pageW - mr, sy, "#cccccc", 0.3);
-    sy += 5;
+    sy += 6;
 
     if (estimate.note) {
-      jpText("備考：", ml, sy, { size: 8.5, bold: true, color: "#333333" });
-      sy += 5.5;
+      txt("備考：", ml, sy, { size: 9, bold: true, color: "#333333" });
+      sy += 6;
       for (const l of estimate.note.split("\n")) {
         if (sy > pageH - 15) break;
-        jpText(l, ml + 3, sy, { size: 8, color: "#555555" });
-        sy += 5;
+        txt(l, ml + 3, sy, { size: 8.5, color: "#555555" });
+        sy += 5.5;
       }
-      sy += 2;
+      sy += 3;
     }
 
     if (company.bankInfo) {
-      jpText("振込先：", ml, sy, { size: 8.5, bold: true, color: "#333333" });
-      sy += 5.5;
+      txt("振込先：", ml, sy, { size: 9, bold: true, color: "#333333" });
+      sy += 6;
       for (const l of company.bankInfo.split("\n")) {
         if (sy > pageH - 15) break;
-        jpText(l, ml + 3, sy, { size: 8, color: "#555555" });
-        sy += 5;
+        txt(l, ml + 3, sy, { size: 8.5, color: "#555555" });
+        sy += 5.5;
       }
     }
   }
 
   // 7. フッター
   drawLine(ml, pageH - 10, pageW - mr, pageH - 10, "#dddddd", 0.2);
-  jpText("パッと見積 で作成", pageW / 2, pageH - 6, { size: 7, color: "#aaaaaa", align: "center" });
+  txt("パッと見積 で作成", pageW / 2, pageH - 6, { size: 7, color: "#aaaaaa", align: "center" });
+
+  if (!fontAvailable) {
+    console.warn("日本語フォントの取得に失敗しました。インターネット接続を確認してください。");
+  }
 
   // 8. 保存
   doc.save(`見積書_${estimate.clientName || "無題"}_${estimate.issueDate}.pdf`);
