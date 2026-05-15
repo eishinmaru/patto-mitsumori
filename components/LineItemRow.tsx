@@ -53,7 +53,7 @@ export default function LineItemRow({ item, index, onChange, onDelete }: Props) 
           <label className="text-xs text-gray-400 block mb-1 ml-1">数量</label>
           <NumericInput
             value={item.quantity}
-            onChange={(v) => onChange({ ...item, quantity: v || 1 })}
+            onChange={(v) => onChange({ ...item, quantity: v })}
             placeholder="1"
           />
         </div>
